@@ -16,4 +16,8 @@ export function div(a, b) {
   return a / b;
 }
 
-export const OPS = { add, sub, mul, div };
+export function abs(a, _b) {
+  return Math.abs(a);
+}
+
+export const OPS = { add, sub, mul, div, abs };
