@@ -1,0 +1,13 @@
+{
+  "name": "calctool",
+  "version": "1.0.0",
+  "description": "A tiny calculator CLI (fake project to exercise the e2e-feature-test workflow).",
+  "type": "module",
+  "bin": { "calctool": "src/cli.js" },
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "lint": "node scripts/lint.js",
+    "test": "node --test"
+  },
+  "dependencies": {}
+}

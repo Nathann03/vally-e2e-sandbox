@@ -1,0 +1,106 @@
+# Companion (traditional) workflow for the e2e-feature-test agentic workflow.
+#
+# Two responsibilities:
+#   1. placeholder — as soon as a PR opens, post a single "queued" review comment
+#      (identified by a hidden marker) so it claims a spot near the top of the PR
+#      before other automated reviewers comment. The agentic workflow later updates
+#      this same comment in place with the real review.
+#   2. dispatch — after CI completes successfully for a PR, resolve the PR number and
+#      dispatch the agentic workflow with that PR as context (aw_context). This bridges
+#      the gap where gh-aw's PR-branch checkout + PR context key off
+#      pull_request / issue_comment / aw_context, not workflow_run.
+name: e2e-feature-test-dispatch
+
+on:
+  pull_request:
+    types: [opened, reopened]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+# The review comment is identified by this marker; both the placeholder here and the
+# agentic workflow's publish-review job find/update the same comment by it.
+env:
+  REVIEW_MARKER: "<!-- e2e-feature-test-review -->"
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: write
+
+jobs:
+  placeholder:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Post or refresh placeholder review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          BODY="$(cat <<'EOF'
+          <!-- e2e-feature-test-review -->
+          ## 🤖 E2E Feature Review — ⏳ Queued
+
+          An automated end-to-end feature review will run after CI passes. This comment
+          will be updated in place with the results (or the reason it was skipped).
+          EOF
+          )"
+          # Strip the 10-space YAML block indentation so markdown renders correctly.
+          BODY="$(printf '%s\n' "${BODY}" | sed 's/^          //')"
+
+          # Reuse the marker comment if one already exists (e.g. on reopen), else create.
+          EXISTING=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq "[.[] | select(.body | contains(\"${REVIEW_MARKER}\"))][0].id // empty")
+
+          if [ -n "${EXISTING}" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING}" -f body="${BODY}"
+            echo "Refreshed placeholder comment ${EXISTING}."
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="${BODY}"
+            echo "Created placeholder comment."
+          fi
+
+  dispatch:
+    # Only for successful CI runs that were triggered by a pull request.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve PR and dispatch agentic workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # Resolve the open PR associated with the CI run's head commit.
+          PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+            --jq '[.[] | select(.state == "open")][0].number // empty')
+
+          if [ -z "${PR_NUMBER}" ]; then
+            echo "No open PR found for ${HEAD_SHA}; nothing to dispatch."
+            exit 0
+          fi
+
+          echo "Dispatching e2e-feature-test for PR #${PR_NUMBER} at ${HEAD_SHA}"
+
+          # aw_context tells the agentic workflow which PR to review AND pins the exact
+          # commit (item_sha) whose CI just passed. Pinning the SHA makes each review
+          # deterministic and idempotent: a run always reviews the commit it was
+          # dispatched for, never whatever happens to be the PR head at runtime. This is
+          # what makes rapid successive pushes race-safe.
+          AW_CONTEXT=$(jq -nc --argjson n "${PR_NUMBER}" --arg sha "${HEAD_SHA}" \
+            '{item_type: "pull_request", item_number: $n, item_sha: $sha}')
+
+          gh workflow run e2e-feature-test.lock.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${GITHUB_REF_NAME}" \
+            -f aw_context="${AW_CONTEXT}"

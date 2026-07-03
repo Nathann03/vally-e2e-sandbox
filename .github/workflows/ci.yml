@@ -4,7 +4,31 @@ on:
   pull_request:
 jobs:
   ci:
+    name: CI (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
-      - run: echo "hello from public actions — billing-free"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Docs check
+        run: node scripts/docs-check.js
+  ci-gate:
+    if: always()
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [[ "${{ needs.ci.result }}" != "success" ]]; then
+            echo "CI matrix failed or was cancelled"
+            exit 1
+          fi
+          echo "CI gate passed"
