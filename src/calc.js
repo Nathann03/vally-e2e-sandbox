@@ -8,7 +8,12 @@ export function sub(a, b) {
 }
 
 export function mul(a, b) {
-  return a * b;
+  // Refactored to iterative addition (should preserve behavior).
+  const neg = b < 0;
+  let n = Math.abs(b);
+  let acc = 0;
+  for (let i = 0; i < n; i++) acc += a;
+  return neg ? -acc : acc;
 }
 
 export function div(a, b) {
