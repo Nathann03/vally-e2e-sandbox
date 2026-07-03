@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// calctool — a tiny calculator CLI. Usage: calctool <op> <a> <b>
+// calctool — a tiny calculator CLI.
+// Usage: calctool <op> <a> <b> (e.g. calctool pow 2 3)
 import { OPS } from "./calc.js";
 
 function main(argv) {
