@@ -8,8 +8,16 @@ on:
   slash_command:
     name: e2e-test
     events: [pull_request_comment]
-  workflow_dispatch:
-  bots: ["github-actions"]
+  # --- Automatic-trigger surface DISABLED for now (security hardening) ---
+  # The workflow currently runs ONLY via the /e2e-test slash command, which requires a
+  # user with write access to explicitly invoke it on a PR — a human is always in the
+  # loop before any PR code is exercised. The automatic paths below are commented out to
+  # avoid running against untrusted PR code unattended. Re-enable them together with the
+  # jobs in e2e-feature-test-dispatch.yml when ready.
+  #   workflow_dispatch — how the companion CI-completion workflow dispatches a review.
+  #   bots              — lets the github-actions[bot] dispatcher pass the trigger gate.
+  # workflow_dispatch:
+  # bots: ["github-actions"]
 permissions:
   contents: read
   actions: read
@@ -158,8 +166,6 @@ safe-outputs:
             if (status === "skip") {
               const cand = {
                 ...commit,
-                note: "skipped — " + (g("skip_reason") || "no end-to-end test was run"),
-                headline: g("headline"),
                 skip_reason: g("skip_reason") || "no end-to-end test was run",
                 aic,
                 run_url: runUrl,
@@ -181,7 +187,7 @@ safe-outputs:
               // A newer (or same-commit) review supersedes; stale older-commit reviews don't.
               if (supersedes(review, state.reviewed)) state.reviewed = review;
               // Advance "latest" only to the newest commit seen.
-              if (supersedes(commit, state.latest)) state.latest = { ...commit, note: "" };
+              if (supersedes(commit, state.latest)) state.latest = { ...commit };
             }
 
             const short = (s) => (s || "").slice(0, 7);
@@ -214,9 +220,9 @@ safe-outputs:
               body += `# ${r.status === "pass" ? "✅" : "❌"} E2E Feature Review\n\n`;
               if (l && l.sha && l.sha !== r.sha) {
                 body += `**Latest commit reviewed:** ${commitDesc(l)} _(⏭️ ${l.skip_reason || "skipped — no functional change"})_\n\n`;
-                body += `> Showing the latest functional review below (commit ${commitDesc({ sha: r.sha, subject: r.subject })}); the newer commit above added no functional change.\n\n`;
+                body += `> Showing the latest functional review below (commit ${commitDesc(r)}); the newer commit above added no functional change.\n\n`;
               } else {
-                body += `**Latest commit reviewed:** ${commitDesc({ sha: r.sha, subject: r.subject })} _(reviewed below)_\n\n`;
+                body += `**Latest commit reviewed:** ${commitDesc(r)} _(reviewed below)_\n\n`;
               }
               body += `---\n\n### ${r.headline}\n\n`;
               body += `### 🔬 What was tested\n\n`;
@@ -255,10 +261,11 @@ comment.
 
 calctool is a tiny zero-dependency Node.js CLI (`src/cli.js` dispatches to pure
 functions in `src/calc.js`; commands are documented in `docs/commands.md`). You are a
-**thin orchestrator**: you do not classify or build anything yourself. You delegate the
-cheap gating decision to the `gate-checker` sub-agent and, only when warranted, the
-expensive end-to-end run to the `e2e-runner` sub-agent. You never modify the repository;
-your only output is one PR comment.
+**thin orchestrator**: you do not
+classify or build anything yourself. You delegate the cheap gating decision to the
+`gate-checker` sub-agent and, only when warranted, the expensive end-to-end run to the
+`e2e-runner` sub-agent. You never modify the repository; your only output is one PR
+comment.
 
 ## Trust boundary (read first)
 
@@ -318,8 +325,9 @@ If it returns `SKIP`, call `publish_review` with `status: skip`, a short `headli
 and the `commit_subject` / `commit_sha` you recorded. Then stop.
 
 Note: every skip is **non-destructive** — the published comment keeps the last real
-review body (if any) and only advances the "Latest commit" line. Only a `pass`/`fail`
-review replaces the body. This keeps the comment correct regardless of run order.
+review body (if any) and only advances the "Latest commit reviewed" line. Only a
+`pass`/`fail` review replaces the body. This keeps the comment correct regardless of run
+order.
 
 ## Step 3 — E2E run (delegated to a strong model, only on PROCEED)
 
