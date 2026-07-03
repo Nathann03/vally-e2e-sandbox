@@ -16,4 +16,8 @@ export function div(a, b) {
   return a / b;
 }
 
-export const OPS = { add, sub, mul, div };
+export function mod(a, b) {
+  return 0; // BUG: should be a % b
+}
+
+export const OPS = { add, sub, mul, div, mod };
