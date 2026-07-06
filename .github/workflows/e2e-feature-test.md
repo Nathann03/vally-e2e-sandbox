@@ -38,6 +38,14 @@ tools:
     toolsets: [pull_requests, actions]
   cache-memory: true
 safe-outputs:
+  # Comment-only: this workflow's sole GitHub side effect is the publish-review PR
+  # comment below. Disable gh-aw's default issue-creating fallbacks so a skip, a
+  # missing tool, or a failed/incomplete run never opens a repository issue — keeping
+  # the stated read-only-plus-one-comment safety model true.
+  report-failure-as-issue: false
+  report-incomplete: false
+  noop: false
+  missing-tool: false
   jobs:
     publish-review:
       description: "Create or update the single E2E feature-review comment on the pull request."
@@ -101,7 +109,7 @@ safe-outputs:
             const fs = require("fs");
             const { execFileSync } = require("child_process");
             const marker = "<!-- e2e-feature-test-review -->";
-            const stateOpen = "<!-- e2e-state:";
+            const stateOpen = "<!-- e2e-state-b64:";
             const stateClose = "-->";
             const repo = process.env.GITHUB_REPOSITORY;
             const out = JSON.parse(fs.readFileSync(process.env.GH_AW_AGENT_OUTPUT, "utf8"));
@@ -111,19 +119,35 @@ safe-outputs:
               process.exit(0);
             }
             const g = (k) => (item[k] == null ? "" : String(item[k]));
+            // Cap agent-provided text so neither the embedded state nor the rendered
+            // comment can exceed GitHub's ~65k issue-comment limit. Each field is carried
+            // BOTH in the base64 state header and in the rendered body, so keep the cap
+            // well under that ceiling.
+            const FIELD_CAP = 3000;
+            const capField = (s) => {
+              s = s == null ? "" : String(s);
+              return s.length <= FIELD_CAP ? s : s.slice(0, FIELD_CAP) + `\n\n_…truncated ${s.length - FIELD_CAP} characters._`;
+            };
             const pr = g("pr_number");
             if (!pr) {
               console.log("No pr_number provided; nothing to do.");
               process.exit(0);
             }
+            if (!/^\d+$/.test(pr)) {
+              console.log(`Refusing to act on non-numeric pr_number ${JSON.stringify(pr)}.`);
+              process.exit(0);
+            }
             const api = (args) => execFileSync("gh", ["api", ...args], { encoding: "utf8" });
 
-            // Find the single managed comment and parse its embedded state (if any).
+            // Find the single managed comment and parse its embedded state (if any). Match
+            // BOTH the marker and the author so a user-posted comment that happens to
+            // contain the marker can't hijack/mis-target the workflow's comment — only the
+            // github-actions[bot] comment this job writes is ever edited.
             const existingId = api([
               `repos/${repo}/issues/${pr}/comments`,
               "--paginate",
               "--jq",
-              `[.[] | select(.body | contains("${marker}"))][0].id // empty`,
+              `[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("${marker}")))][0].id // empty`,
             ]).trim();
             let state = { reviewed: null, latest: null };
             if (existingId) {
@@ -132,7 +156,10 @@ safe-outputs:
               if (i !== -1) {
                 const j = existingBody.indexOf(stateClose, i);
                 try {
-                  state = JSON.parse(existingBody.slice(i + stateOpen.length, j).trim());
+                  // State is stored base64-encoded so agent-provided fields can never emit
+                  // the "-->" close marker and truncate/corrupt the payload.
+                  const encoded = existingBody.slice(i + stateOpen.length, j).trim();
+                  state = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
                 } catch (_) {}
               }
             }
@@ -186,7 +213,7 @@ safe-outputs:
             if (status === "skip") {
               const cand = {
                 ...commit,
-                skip_reason: g("skip_reason") || "no end-to-end test was run",
+                skip_reason: capField(g("skip_reason")) || "no end-to-end test was run",
                 aic,
                 run_url: runUrl,
               };
@@ -195,12 +222,12 @@ safe-outputs:
               const review = {
                 ...commit,
                 status,
-                headline: g("headline"),
-                as_intended: g("as_intended"),
-                antagonistic: g("antagonistic"),
-                edge_cases: g("edge_cases"),
-                random: g("random"),
-                action_items: g("action_items"),
+                headline: capField(g("headline")),
+                as_intended: capField(g("as_intended")),
+                antagonistic: capField(g("antagonistic")),
+                edge_cases: capField(g("edge_cases")),
+                random: capField(g("random")),
+                action_items: capField(g("action_items")),
                 aic,
                 run_url: runUrl,
               };
@@ -215,7 +242,10 @@ safe-outputs:
 
             const r = state.reviewed; // latest FUNCTIONAL review (pass/fail) — the body highlight
             const l = state.latest; // latest commit the workflow processed (may be a skip, or == r)
-            let body = `${marker}\n${stateOpen} ${JSON.stringify(state)} ${stateClose}\n`;
+            // State is base64-encoded so agent-provided fields can never contain the "-->"
+            // close marker and corrupt the payload on the next read.
+            const stateEncoded = Buffer.from(JSON.stringify(state), "utf8").toString("base64");
+            let body = `${marker}\n${stateOpen} ${stateEncoded} ${stateClose}\n`;
 
             const footer = (src) => {
               let f = `---\n\n<sub>`;
@@ -257,6 +287,13 @@ safe-outputs:
               body += footer(r);
             }
 
+            // Last-resort guard against GitHub's ~65k comment limit. The base64 state
+            // header sits at the top, so trimming the tail preserves the parseable state
+            // even in the pathological case where per-field caps still aren't enough.
+            const MAX_BODY = 64000;
+            if (body.length > MAX_BODY) {
+              body = body.slice(0, MAX_BODY) + "\n\n_…comment truncated to fit GitHub's size limit._";
+            }
             fs.writeFileSync("/tmp/e2e-review-body.md", body);
             if (existingId) {
               api([`repos/${repo}/issues/comments/${existingId}`, "-X", "PATCH", "-F", "body=@/tmp/e2e-review-body.md"]);
@@ -279,14 +316,13 @@ comment.
 
 ## Context
 
-calctool is a tiny zero-dependency Node.js CLI (`src/cli.js` dispatches to pure
-functions in `src/calc.js`; commands are documented in `docs/commands.md`). You are a
-**thin orchestrator**: you do not
+Vally is an npm-workspaces monorepo (`@microsoft/vally` core, `@microsoft/vally-cli`,
+`@microsoft/vally-server`, plus `plugins/`). You are a **thin orchestrator**: you do not
 classify or build anything yourself. You delegate the quick gating decision to the
 `gate-checker` sub-agent and, only when warranted, the full end-to-end run to the
 `e2e-runner` sub-agent. Gating is cheap because it only reads the diff and returns one
-line; the end-to-end run is the costly part, so it runs only when the gate says to. You never modify the repository; your only output is one PR
-comment.
+line; the end-to-end run is the costly part, so it runs only when the gate says to. You
+never modify the repository; your only output is one PR comment.
 
 ## Trust boundary (read first)
 
@@ -348,7 +384,7 @@ order.
 ## Step 3 — E2E run (delegated to the e2e-runner, only on PROCEED)
 
 If the gate-checker returned `PROCEED`, delegate to the `e2e-runner` sub-agent, passing
-the PR number and the scope summary. It sets up calctool, generates a fresh e2e suite, drives
+the PR number and the scope summary. It builds vally, generates a fresh e2e suite, drives
 the feature across the four modes, and returns a verdict plus one findings block per mode.
 
 Then call `publish_review` with:
@@ -370,8 +406,9 @@ in cache filenames) so future runs can detect "no substantial change".
 
 ## Reporting
 
-There is exactly **one** review comment per PR, pinned near the top (a companion workflow
-posts a placeholder when the PR opens). You update it by calling the `publish_review`
+There is exactly **one** review comment per PR. The `publish_review` safe-output creates
+it on the first `/e2e-test` run and updates that same comment on every later run. You
+update it by calling the `publish_review`
 safe-output **once** per run — for both skips and completed reviews. Never post a separate
 comment. The job renders the four modes as collapsible `<details>` sections and shows the
 last-reviewed commit, so keep each findings block focused on **what you tried and what
