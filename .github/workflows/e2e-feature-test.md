@@ -153,15 +153,35 @@ safe-outputs:
               } catch (_) {}
             }
             commit.date = commitDate;
-            // A commit "supersedes" a stored pointer only if it's the SAME commit (an
-            // update/retry of that commit) or STRICTLY newer by committer date. A
-            // different commit with an older-or-equal date never overwrites — so a
-            // late-completing stale run (e.g. an older commit's review finishing after a
-            // newer commit's) can never clobber a newer result. Combined with the
+            // Decide whether `incoming` should replace `stored` in the ordering. Prefer the
+            // commit graph so rebases / cherry-picks (whose new head can carry an OLDER
+            // committer date than the commit it replaces) still order correctly: ask the
+            // compare API how `incoming` relates to `stored`.
+            //   - ahead / identical → incoming is the same or a descendant → it supersedes.
+            //   - behind            → incoming is an ancestor of stored → it does NOT.
+            //   - diverged / API error / missing sha → fall back to committer date.
+            // Committer date is only the fallback, so a stale run that can't be ordered by
+            // graph still can't clobber a strictly-newer result, and — combined with the
             // fail-closed checkout (a run that can't check out its commit emits a skip,
-            // never a base-branch pass/fail), this makes the comment order-independent.
-            const supersedes = (incoming, stored) =>
-              !stored || !stored.date || incoming.sha === stored.sha || incoming.date > stored.date;
+            // never a base-branch pass/fail) — the comment stays order-independent.
+            const compareStatus = (base, head) => {
+              try {
+                return api([`repos/${repo}/compare/${base}...${head}`, "--jq", ".status"]).trim();
+              } catch (_) {
+                return "";
+              }
+            };
+            const supersedes = (incoming, stored) => {
+              if (!stored || !stored.date) return true;
+              if (incoming.sha === stored.sha) return true;
+              if (incoming.sha && stored.sha) {
+                const rel = compareStatus(stored.sha, incoming.sha);
+                if (rel === "ahead" || rel === "identical") return true;
+                if (rel === "behind") return false;
+                // "diverged" or unavailable → fall through to committer-date comparison.
+              }
+              return incoming.date > stored.date;
+            };
 
             if (status === "skip") {
               const cand = {
