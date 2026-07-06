@@ -9,3 +9,6 @@ calctool div 10 2  # 5
 ```
 
 See [docs/commands.md](docs/commands.md).
+
+## Notes
+This project is a fake sandbox.
