@@ -6,3 +6,4 @@
 | `sub <a> <b>` | Subtract b from a | `calctool sub 5 2` → `3` |
 | `mul <a> <b>` | Multiply two numbers | `calctool mul 4 3` → `12` |
 | `div <a> <b>` | Divide a by b (error on 0) | `calctool div 10 2` → `5` |
+| `mod <a> <b>` | Remainder of a ÷ b | `calctool mod 10 3` → `1` |
